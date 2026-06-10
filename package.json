@@ -1,0 +1,12 @@
+{
+  "name": "herbs-magic-consultation",
+  "version": "1.0.0",
+  "description": "Herbs Magic 1:1 Ayurvedic Consultation booking page",
+  "scripts": {
+    "start": "serve . -p 3000",
+    "dev": "serve . -p 3000"
+  },
+  "dependencies": {
+    "serve": "^14.2.4"
+  }
+}
