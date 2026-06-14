@@ -150,6 +150,10 @@ function AppointmentBooking({ setPage }) {
             } catch (saveErr) {
               console.error('[Appointment] Save error:', saveErr);
             }
+            if (window.fbq) {
+              fbq('track', 'Schedule');
+              fbq('track', 'Purchase', { value: consultFee, currency: 'INR' });
+            }
             setLoading(false);
             setSubmitted(true);
             resolve();
@@ -162,6 +166,7 @@ function AppointmentBooking({ setPage }) {
             },
           },
         });
+        if (window.fbq) fbq('track', 'InitiateCheckout', { value: consultFee, currency: 'INR' });
         rzp.open();
       });
     } catch (err) {
