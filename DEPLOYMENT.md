@@ -1,92 +1,73 @@
-# Deployment Guide — consultation.herbsmagic.in
+# Deployment — consultation.herbsmagic.in
 
 ## Architecture
 
-Static HTML/JSX site served by Nginx. No build step. API calls proxied to the existing Herbs Magic backend on port 5000.
-
 ```
-Local machine  →  GitHub (main)  →  VPS (pull & regenerate config)
+Browser ──HTTPS──> Nginx (consultation.herbsmagic.in)
+                     ├─ /        static files from /root/apps/consultation-new (dist/app.js, config.js, public/)
+                     └─ /api     proxy -> 127.0.0.1:5200  (PM2: hm-consultation-api, backend/server.js, SQLite)
 ```
 
----
+- Frontend: JSX precompiled by esbuild (`npm run build` -> `dist/app.js`); `config.js` is generated from `.env`.
+- Backend: its own Express + SQLite app, separate from the main Herbs Magic backend (port 5000).
+- Node on the VPS is v18 and glibc is 2.31, so `better-sqlite3` is pinned to 11.10.0 and `nodemailer` to 6.x. Don't bump them without testing on the VPS.
 
-## Step 1 — Push changes from local machine
+## Ports used on this VPS
+
+3000, 3001, 3100, 3200, 4000, 4300, 4400, 5000, 5100, 8000, 8001, 9100, 27017, 6379 are taken. This project uses **5200** (loopback only).
+
+## Env files (never committed)
+
+| File | Purpose |
+|------|---------|
+| `/root/apps/consultation-new/.env` | `CONSULTATION_API_BASE`, `RAZORPAY_KEY_ID` (public; written into `config.js`). The backend also reads `RAZORPAY_KEY_ID` from here. |
+| `/root/apps/consultation-new/backend/.env` | `NODE_ENV=production`, `PORT=5200`, `HOST=127.0.0.1`, `CORS_ORIGIN`, `RAZORPAY_KEY_SECRET`, `CONSULTATION_FEE`, `SMTP_*`, `DOCTOR_EMAIL`, `ADMIN_TOKEN`. See `backend/.env.example`. |
+
+The Razorpay key ID and secret must be from the same key pair (live with live).
+
+## Deploy
+
+Automatic: push to `master`; GitHub Actions SSHes in and runs `deploy.sh`.
+Secrets required: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `VPS_APP_PATH` (=`/root/apps/consultation-new`), optional `VPS_PORT`.
+
+Manual:
 
 ```bash
-git add .
-git commit -m "your message"
-git push origin master
+cd /root/apps/consultation-new
+./deploy.sh
 ```
 
----
+`deploy.sh` resets to `origin/master`, rebuilds the frontend, installs backend deps, and runs `pm2 startOrReload ecosystem.config.js` + `pm2 save`.
 
-## Step 2 — SSH into VPS and deploy
+## Nginx
+
+Live vhost: `/etc/nginx/sites-available/consultation.herbsmagic.in` (SSL by certbot). Key parts:
+- `root /root/apps/consultation-new;`
+- `include /etc/nginx/snippets/hm-consultation-deny.conf;` — returns 404 for `backend/`, `.git`, dotfiles, `deploy.sh`, `package.json`, `*.jsx`, etc. **Keep this**: the web root is the repo, which contains `backend/.env`.
+- `location /api { proxy_pass http://127.0.0.1:5200; ... }`
+
+Reference copy of the rules: `deploy/nginx.conf`. After any change: `nginx -t && systemctl reload nginx`.
+
+## Operations
 
 ```bash
-ssh root@62.72.12.185
-cd /root/apps/consultation
-git pull origin master
-node generate-config.js
+pm2 status | grep consultation
+pm2 logs hm-consultation-api --lines 50 --nostream
+pm2 restart hm-consultation-api --update-env     # after editing backend/.env
+curl -s http://127.0.0.1:5200/api/payments/config
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" https://consultation.herbsmagic.in/api/b2b-appointments
 ```
 
-> `generate-config.js` reads `.env` and regenerates `config.js`. Nginx picks up changes immediately — no restart needed.
+Database: `backend/database.db` (SQLite, gitignored). Back it up, e.g. `cp backend/database.db /root/backups/consultation-$(date +%F).db`.
 
----
+## Local development
 
-## If you change environment variables
+`backend/`: `cp .env.example .env && npm i && npm start` (mock payments if no Razorpay secret and `NODE_ENV` is not production).
+Frontend: set `CONSULTATION_API_BASE=http://localhost:5200` in `.env`, then `npm run dev`.
 
-Edit `.env` on the VPS, then regenerate:
+## Rollback
 
 ```bash
-nano /root/apps/consultation/.env
-node /root/apps/consultation/generate-config.js
+cp /root/consultation.nginx.bak /etc/nginx/sites-available/consultation.herbsmagic.in && systemctl reload nginx
 ```
-
----
-
-## Useful VPS Commands
-
-```bash
-# Check Nginx status
-systemctl status nginx
-
-# Reload Nginx (after config changes)
-systemctl reload nginx
-
-# View Nginx error logs
-tail -f /var/log/nginx/error.log
-
-# View Nginx access logs
-tail -f /var/log/nginx/access.log
-
-# Check current config.js values
-cat /root/apps/consultation/config.js
-
-# Check backend (API) is running
-pm2 status
-curl http://127.0.0.1:5000/api/payments/config
-```
-
----
-
-## VPS Quick Reference
-
-| Item | Value |
-|------|-------|
-| IP | `62.72.12.185` |
-| Domain | `consultation.herbsmagic.in` |
-| Code path | `/root/apps/consultation` |
-| Nginx config | `/etc/nginx/sites-available/consultation.herbsmagic.in` |
-| Env file | `/root/apps/consultation/.env` |
-| SSL cert | `/etc/letsencrypt/live/consultation.herbsmagic.in/` (expires 2026-09-08) |
-| Backend API | `localhost:5000` (PM2 process: `server`, id 0) |
-
----
-
-## Renew SSL (if needed)
-
-Certbot auto-renews, but to force renew manually:
-
-```bash
-certbot renew --nginx
-```
+(Points back at the old static folder and the port-5000 API, if the old folder still exists.)
