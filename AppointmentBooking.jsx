@@ -37,6 +37,7 @@ function AppointmentBooking({ setPage }) {
   const [error, setError] = useBkState('');
   const [form, setForm] = useBkState({ fullName: '', email: '', phone: '', age: '', gender: '', healthGoal: '', notes: '' });
   const [errors, setErrors] = useBkState({});
+  const [bookedSlots, setBookedSlots] = useBkState([]);
 
   const [consultFee, setConsultFee] = useBkState(null);
 
@@ -54,11 +55,23 @@ function AppointmentBooking({ setPage }) {
   const grid = useBkMemo(() => bkBuildMonthGrid(calYear, calMonth), [calYear, calMonth]);
   const todayKey = bkKey(today.getFullYear(), today.getMonth(), today.getDate());
 
+  useBkEffect(() => {
+    if (!selectedDate) {
+      setBookedSlots([]);
+      return;
+    }
+    fetch(`${API_BASE}/api/b2b-appointments/booked-slots?date=${selectedDate}`)
+      .then(r => r.json())
+      .then(d => setBookedSlots(d.bookedSlots || []))
+      .catch(() => setBookedSlots([]));
+  }, [selectedDate]);
+
   const availableSlots = useBkMemo(() => {
     if (!selectedDate) return [];
     const dayName = bkWeekdays[new Date(selectedDate + 'T00:00:00').getDay()];
-    return bkDefaultSlots[dayName] || [];
-  }, [selectedDate]);
+    const allSlots = bkDefaultSlots[dayName] || [];
+    return allSlots.filter(slot => !bookedSlots.includes(slot));
+  }, [selectedDate, bookedSlots]);
 
   useBkEffect(() => {
     if (availableSlots.length && !availableSlots.includes(selectedSlot)) setSelectedSlot(availableSlots[0]);

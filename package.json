@@ -4,9 +4,13 @@
   "description": "Herbs Magic 1:1 Ayurvedic Consultation booking page",
   "scripts": {
     "start": "serve . -p 3000",
-    "dev": "serve . -p 3000"
+    "dev": "node build.js && serve . -p 3000",
+    "build": "node generate-config.js && node build.js"
   },
   "dependencies": {
     "serve": "^14.2.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }
