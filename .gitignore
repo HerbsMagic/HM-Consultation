@@ -8,3 +8,4 @@ database.db
 dist/
 logs/
 node_modules/
+logs-local-*.txt
