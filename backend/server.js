@@ -1,4 +1,5 @@
-require('dotenv').config();
+// backend/.env first, then the repo-root .env (shared RAZORPAY_KEY_ID); first value wins
+require('dotenv').config({ path: [require('path').join(__dirname, '.env'), require('path').join(__dirname, '..', '.env')] });
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');

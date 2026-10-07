@@ -1,0 +1,4 @@
+◇ injected env (6) from .env
+⚠️  MOCK MODE ACTIVE — No real Razorpay secret found. Payments will be simulated.
+Server is running on port 5200
+[MOCK] Created fake order: mock_order_1791353091810 for ₹499

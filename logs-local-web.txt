@@ -1,0 +1,17 @@
+ INFO  Accepting connections at http://localhost:3000
+ HTTP  7/10/2026 11:34:38 am ::1 GET /
+ HTTP  7/10/2026 11:34:38 am ::1 Returned 200 in 32 ms
+ HTTP  7/10/2026 11:34:38 am ::1 GET /dist/app.js
+ HTTP  7/10/2026 11:34:38 am ::1 Returned 200 in 5 ms
+ HTTP  7/10/2026 11:40:07 am ::1 GET /
+ HTTP  7/10/2026 11:40:07 am ::1 Returned 200 in 5 ms
+ HTTP  7/10/2026 11:40:07 am ::1 GET /config.js
+ HTTP  7/10/2026 11:40:07 am ::1 GET /dist/app.js
+ HTTP  7/10/2026 11:40:07 am ::1 Returned 200 in 2 ms
+ HTTP  7/10/2026 11:40:07 am ::1 Returned 200 in 5 ms
+ HTTP  7/10/2026 11:40:14 am ::1 GET /public/HM.png
+ HTTP  7/10/2026 11:40:14 am ::1 GET /public/doctor.jpeg
+ HTTP  7/10/2026 11:40:14 am ::1 Returned 200 in 8 ms
+ HTTP  7/10/2026 11:40:14 am ::1 Returned 200 in 9 ms
+ HTTP  7/10/2026 11:40:27 am ::1 GET /public/HM.png
+ HTTP  7/10/2026 11:40:27 am ::1 Returned 304 in 3 ms
