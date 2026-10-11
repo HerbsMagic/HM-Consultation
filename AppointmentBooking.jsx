@@ -38,6 +38,7 @@ function AppointmentBooking({ setPage }) {
   const [form, setForm] = useBkState({ fullName: '', email: '', phone: '', age: '', gender: '', healthGoal: '', notes: '' });
   const [errors, setErrors] = useBkState({});
   const [bookedSlots, setBookedSlots] = useBkState([]);
+  const [unsavedPaymentId, setUnsavedPaymentId] = useBkState('');
 
   const [consultFee, setConsultFee] = useBkState(null);
 
@@ -127,6 +128,7 @@ function AppointmentBooking({ setPage }) {
         }),
       });
       const orderData = await orderRes.json();
+      if (orderRes.status === 409) setBookedSlots(s => [...s, selectedSlot]); // slot taken while the form was open
       const orderId = orderData?.id || orderData?.orderId || orderData?.data?.id || orderData?.order?.id;
       if (!orderId) throw new Error(orderData?.message || 'Failed to create order');
 
@@ -141,32 +143,43 @@ function AppointmentBooking({ setPage }) {
           prefill: { name: form.fullName, email: form.email, contact: form.phone },
           theme: { color: '#003334' },
           handler: async (paymentResponse) => {
-            try {
-              const res = await fetch(`${API_BASE}/api/b2b-appointments`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  ...form,
-                  appointmentDate: selectedDate,
-                  appointmentTime: selectedSlot,
-                  consultationFee: consultFee,
-                  paymentStatus: 'paid',
-                  razorpayPaymentId: paymentResponse.razorpay_payment_id,
-                  razorpayOrderId: paymentResponse.razorpay_order_id,
-                  razorpaySignature: paymentResponse.razorpay_signature,
-                }),
-              });
-              if (!res.ok) {
-                const text = await res.text();
-                console.error('[Appointment] Save failed:', res.status, text);
+            const body = JSON.stringify({
+              ...form,
+              appointmentDate: selectedDate,
+              appointmentTime: selectedSlot,
+              consultationFee: consultFee,
+              paymentStatus: 'paid',
+              razorpayPaymentId: paymentResponse.razorpay_payment_id,
+              razorpayOrderId: paymentResponse.razorpay_order_id,
+              razorpaySignature: paymentResponse.razorpay_signature,
+            });
+            // The money has moved, so retry the save on network / server errors (the API dedupes by payment ID).
+            let saved = false;
+            for (let attempt = 1; attempt <= 3 && !saved; attempt++) {
+              let retry = true;
+              try {
+                const res = await fetch(`${API_BASE}/api/b2b-appointments`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body,
+                });
+                saved = res.ok;
+                if (!res.ok) {
+                  const text = await res.text();
+                  console.error('[Appointment] Save failed:', res.status, text);
+                  retry = res.status >= 500;
+                }
+              } catch (saveErr) {
+                console.error('[Appointment] Save error:', saveErr);
               }
-            } catch (saveErr) {
-              console.error('[Appointment] Save error:', saveErr);
+              if (saved || !retry) break;
+              if (attempt < 3) await new Promise(r => setTimeout(r, 1500));
             }
             if (window.fbq) {
-              fbq('track', 'Schedule');
+              if (saved) fbq('track', 'Schedule');
               fbq('track', 'Purchase', { value: consultFee, currency: 'INR' });
             }
+            setUnsavedPaymentId(saved ? '' : paymentResponse.razorpay_payment_id || 'unknown');
             setLoading(false);
             setSubmitted(true);
             resolve();
@@ -199,6 +212,26 @@ function AppointmentBooking({ setPage }) {
   const errSt = { fontFamily: 'var(--sans)', fontSize: 11, color: '#e74c3c', marginTop: 4 };
   const niceDate = selectedDate ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', month: 'long', day: 'numeric' }) : '';
 
+  if (submitted && unsavedPaymentId) {
+    return (
+      <div style={{ paddingTop: 68, minHeight: '100vh', background: 'var(--bg-mint)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '100px 20px 40px' }}>
+        <div style={{ background: 'white', borderRadius: 28, padding: '52px 40px', maxWidth: 520, width: '100%', textAlign: 'center', boxShadow: '0 24px 64px rgba(0,51,52,0.1)' }}>
+          <h2 style={{ fontFamily: 'var(--serif)', fontSize: '2rem', fontWeight: 600, color: 'var(--green-950)', marginBottom: 12 }}>Payment received — one more step</h2>
+          <p style={{ fontFamily: 'var(--sans)', fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 10 }}>
+            Your payment of ₹{consultFee} went through, but we could not record your appointment automatically. Please email us the payment ID below and we will confirm your slot.
+          </p>
+          <div style={{ background: 'var(--bg-soft)', borderRadius: 14, padding: '16px 18px', margin: '20px 0 28px', textAlign: 'left' }}>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Payment ID</div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: 14, color: 'var(--text-dark)', fontWeight: 700, overflowWrap: 'anywhere', marginBottom: 10 }}>{unsavedPaymentId}</div>
+            <div style={{ fontFamily: 'var(--sans)', fontSize: 13, color: 'var(--text-muted)' }}>📅 {niceDate} &nbsp;·&nbsp; ⏰ {selectedSlot} IST</div>
+          </div>
+          <a href={`mailto:hello@theherbsmagic.com?subject=${encodeURIComponent('Consultation booking — payment ' + unsavedPaymentId)}&body=${encodeURIComponent(`Name: ${form.fullName}\nPhone: ${form.phone}\nRequested slot: ${selectedDate} ${selectedSlot} IST\nPayment ID: ${unsavedPaymentId}`)}`}
+            style={{ display: 'inline-block', fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'white', background: 'linear-gradient(135deg, var(--green-950), var(--green-700))', textDecoration: 'none', padding: '12px 28px', borderRadius: 999, boxShadow: '0 6px 20px rgba(0,51,52,0.28)' }}>Email hello@theherbsmagic.com</a>
+        </div>
+      </div>
+    );
+  }
+
   if (submitted) {
     return (
       <div style={{ paddingTop: 68, minHeight: '100vh', background: 'var(--bg-mint)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '100px 20px 40px' }}>
@@ -208,7 +241,7 @@ function AppointmentBooking({ setPage }) {
           </div>
           <h2 style={{ fontFamily: 'var(--serif)', fontSize: '2rem', fontWeight: 600, color: 'var(--green-950)', marginBottom: 12 }}>Consultation Booked!</h2>
           <p style={{ fontFamily: 'var(--sans)', fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.7, marginBottom: 10 }}>
-            Consultation booked for ₹{consultFee}. A confirmation and calendar invite are on the way to <strong style={{ color: 'var(--text-dark)' }}>{form.email}</strong>.
+            Consultation booked for ₹{consultFee}. A confirmation email is on the way to <strong style={{ color: 'var(--text-dark)' }}>{form.email}</strong>.
           </p>
           <div style={{ background: 'var(--bg-soft)', borderRadius: 14, padding: '16px 18px', margin: '20px 0 28px', textAlign: 'left' }}>
             <div style={{ fontFamily: 'var(--sans)', fontSize: 13, color: 'var(--text-dark)', fontWeight: 700, marginBottom: 6 }}>{form.fullName}</div>

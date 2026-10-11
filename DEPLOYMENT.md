@@ -21,9 +21,19 @@ Browser ──HTTPS──> Nginx (consultation.herbsmagic.in)
 | File | Purpose |
 |------|---------|
 | `/root/apps/consultation-new/.env` | `CONSULTATION_API_BASE`, `RAZORPAY_KEY_ID` (public; written into `config.js`). The backend also reads `RAZORPAY_KEY_ID` from here. |
-| `/root/apps/consultation-new/backend/.env` | `NODE_ENV=production`, `PORT=5200`, `HOST=127.0.0.1`, `CORS_ORIGIN`, `RAZORPAY_KEY_SECRET`, `CONSULTATION_FEE`, `SMTP_*`, `DOCTOR_EMAIL`, `ADMIN_TOKEN`. See `backend/.env.example`. |
+| `/root/apps/consultation-new/backend/.env` | `NODE_ENV=production`, `PORT=5200`, `HOST=127.0.0.1`, `CORS_ORIGIN`, `RAZORPAY_KEY_SECRET`, `CONSULTATION_FEE`, `SMTP_*`, `DOCTOR_EMAIL`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_TOKEN`. See `backend/.env.example`. |
 
 The Razorpay key ID and secret must be from the same key pair (live with live).
+
+## Admin panel
+
+`https://consultation.herbsmagic.in/admin` — sign in to see every booking, search/filter, export CSV, change status (confirmed / completed / cancelled / no-show), reschedule, and keep internal notes.
+
+- Login is `ADMIN_USERNAME` (default `admin`) + `ADMIN_PASSWORD` from `backend/.env`. The panel returns "not configured" until `ADMIN_PASSWORD` is set. Use a long, unique password.
+- After setting or changing it: `pm2 restart hm-consultation-api --update-env`. Changing the password signs out every open session.
+- Sessions last 12 hours. 5 wrong attempts lock that IP out for 15 minutes (restarting the API clears the lock).
+- Cancelling a booking frees its slot but does **not** refund the payment — refund from the Razorpay dashboard.
+- Rescheduling emails the patient the new date and time (needs `SMTP_*`).
 
 ## Deploy
 
@@ -63,7 +73,7 @@ Database: `backend/database.db` (SQLite, gitignored). Back it up, e.g. `cp backe
 ## Local development
 
 `backend/`: `cp .env.example .env && npm i && npm start` (mock payments if no Razorpay secret and `NODE_ENV` is not production).
-Frontend: set `CONSULTATION_API_BASE=http://localhost:5200` in `.env`, then `npm run dev`.
+Frontend: set `CONSULTATION_API_BASE=http://localhost:5200` in `.env`, then `npm run dev`. Locally the admin panel is at `http://localhost:3000/#/admin` (`serve` has no `/admin` rewrite).
 
 ## Rollback
 
