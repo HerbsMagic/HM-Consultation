@@ -55,15 +55,31 @@ db.exec(`
 const existingColumns = db.prepare('PRAGMA table_info(appointments)').all().map(c => c.name);
 if (!existingColumns.includes('status')) db.exec("ALTER TABLE appointments ADD COLUMN status TEXT DEFAULT 'confirmed'");
 if (!existingColumns.includes('adminNotes')) db.exec('ALTER TABLE appointments ADD COLUMN adminNotes TEXT');
+// 'online' = booked and paid on the website, 'admin' = added by hand in the admin panel
+if (!existingColumns.includes('source')) db.exec("ALTER TABLE appointments ADD COLUMN source TEXT DEFAULT 'online'");
+
+// Times the doctor is unavailable. time NULL blocks the whole day.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS blocked_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    time TEXT,
+    reason TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
 const APPOINTMENT_STATUSES = ['confirmed', 'completed', 'cancelled', 'no_show'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^\d{2}:\d{2}$/;
 
-// A slot is taken by any paid appointment that has not been cancelled.
+// A slot is taken by any appointment that has not been cancelled.
 const findSlotHolder = db.prepare(`
   SELECT id FROM appointments
-  WHERE appointmentDate = ? AND appointmentTime = ? AND paymentStatus = 'paid'
+  WHERE appointmentDate = ? AND appointmentTime = ?
     AND COALESCE(status, 'confirmed') != 'cancelled' AND id != ?
 `);
+const findBlock = db.prepare('SELECT id FROM blocked_slots WHERE date = ? AND (time IS NULL OR time = ?)');
 
 // Initialize Razorpay
 const razorpay = new Razorpay({
@@ -188,6 +204,9 @@ app.post('/api/payments/create-order', async (req, res) => {
   if (appointmentDate && appointmentTime && findSlotHolder.get(appointmentDate, appointmentTime, 0)) {
     return res.status(409).json({ message: 'That time slot was just booked. Please choose another slot.' });
   }
+  if (appointmentDate && appointmentTime && findBlock.get(appointmentDate, appointmentTime)) {
+    return res.status(409).json({ message: 'That time slot is no longer available. Please choose another slot.' });
+  }
 
   // MOCK MODE: Return a fake order ID for local UI testing
   if (MOCK_MODE) {
@@ -248,12 +267,13 @@ app.post('/api/b2b-appointments', (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
+    const field = (name) => appointmentData[name] ?? null; // a missing field is stored empty, not a crash
     const result = stmt.run(
-      appointmentData.fullName, appointmentData.email, appointmentData.phone,
-      appointmentData.age, appointmentData.gender, appointmentData.healthGoal,
-      appointmentData.notes, appointmentData.appointmentDate, appointmentData.appointmentTime,
+      field('fullName'), field('email'), field('phone'),
+      field('age'), field('gender'), field('healthGoal'),
+      field('notes'), field('appointmentDate'), field('appointmentTime'),
       getFee(), 'paid', // set server-side, only reached after signature verification
-      razorpayOrderId, razorpayPaymentId, razorpaySignature
+      razorpayOrderId ?? null, razorpayPaymentId ?? null, razorpaySignature ?? null
     );
 
     res.status(201).json({ 
@@ -292,12 +312,23 @@ app.get('/api/b2b-appointments/booked-slots', (req, res) => {
   if (!date) return res.status(400).json({ error: 'Date is required' });
 
   try {
-    const stmt = db.prepare("SELECT appointmentTime FROM appointments WHERE appointmentDate = ? AND paymentStatus = ? AND COALESCE(status, 'confirmed') != 'cancelled'");
-    const rows = stmt.all(date, 'paid');
-    const bookedSlots = rows.map(r => r.appointmentTime);
-    res.json({ bookedSlots });
+    const stmt = db.prepare("SELECT appointmentTime FROM appointments WHERE appointmentDate = ? AND COALESCE(status, 'confirmed') != 'cancelled'");
+    const rows = stmt.all(date);
+    const blocks = db.prepare('SELECT time FROM blocked_slots WHERE date = ?').all(date);
+    const bookedSlots = rows.map(r => r.appointmentTime).concat(blocks.filter(b => b.time).map(b => b.time));
+    res.json({ bookedSlots, dayBlocked: blocks.some(b => !b.time) });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch booked slots' });
+  }
+});
+
+// Whole days the doctor is unavailable, so the booking calendar can grey them out
+app.get('/api/availability/blocked-days', (req, res) => {
+  try {
+    const rows = db.prepare("SELECT DISTINCT date FROM blocked_slots WHERE time IS NULL AND date >= date('now', '-1 day')").all();
+    res.json({ blockedDays: rows.map(r => r.date) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch blocked days' });
   }
 });
 
@@ -314,7 +345,12 @@ app.patch('/api/b2b-appointments/:id', requireAdmin, (req, res) => {
   if (!current) return res.status(404).json({ message: 'Booking not found' });
 
   const body = req.body || {};
+  // Payment can only be edited on hand-added bookings; online ones are set by Razorpay verification.
+  if (body.paymentStatus != null && (current.source !== 'admin' || !['offline', 'unpaid'].includes(body.paymentStatus))) {
+    return res.status(400).json({ message: 'Payment status cannot be changed for this booking' });
+  }
   const next = {
+    paymentStatus: body.paymentStatus ?? current.paymentStatus,
     status: body.status ?? current.status ?? 'confirmed',
     adminNotes: body.adminNotes ?? current.adminNotes,
     appointmentDate: body.appointmentDate ?? current.appointmentDate,
@@ -325,7 +361,7 @@ app.patch('/api/b2b-appointments/:id', requireAdmin, (req, res) => {
   if (next.adminNotes != null && (typeof next.adminNotes !== 'string' || next.adminNotes.length > 2000)) {
     return res.status(400).json({ message: 'Notes must be text of at most 2000 characters' });
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.appointmentDate) || !/^\d{2}:\d{2}$/.test(next.appointmentTime)) {
+  if (!DATE_RE.test(next.appointmentDate) || !TIME_RE.test(next.appointmentTime)) {
     return res.status(400).json({ message: 'Date must be YYYY-MM-DD and time HH:MM' });
   }
 
@@ -336,8 +372,8 @@ app.patch('/api/b2b-appointments/:id', requireAdmin, (req, res) => {
   }
 
   try {
-    db.prepare('UPDATE appointments SET status = ?, adminNotes = ?, appointmentDate = ?, appointmentTime = ? WHERE id = ?')
-      .run(next.status, next.adminNotes, next.appointmentDate, next.appointmentTime, current.id);
+    db.prepare('UPDATE appointments SET status = ?, adminNotes = ?, appointmentDate = ?, appointmentTime = ?, paymentStatus = ? WHERE id = ?')
+      .run(next.status, next.adminNotes ?? null, next.appointmentDate, next.appointmentTime, next.paymentStatus ?? null, current.id);
   } catch (dbError) {
     console.error('Error updating appointment:', dbError);
     return res.status(500).json({ message: 'Error updating appointment' });
@@ -362,6 +398,93 @@ app.patch('/api/b2b-appointments/:id', requireAdmin, (req, res) => {
   }
 
   res.json({ data: db.prepare('SELECT * FROM appointments WHERE id = ?').get(current.id) });
+});
+
+// Endpoint 7: Add a Booking by Hand (Admin) — phone / walk-in patients, no online payment
+app.post('/api/admin/appointments', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const text = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+  const fullName = text(body.fullName, 120);
+  const phone = text(body.phone, 30);
+  const email = text(body.email, 200);
+  const appointmentDate = text(body.appointmentDate, 10);
+  const appointmentTime = text(body.appointmentTime, 5);
+
+  if (!fullName || !phone) return res.status(400).json({ message: 'Name and phone are required' });
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: 'Invalid email' });
+  if (!DATE_RE.test(appointmentDate) || !TIME_RE.test(appointmentTime)) {
+    return res.status(400).json({ message: 'Date must be YYYY-MM-DD and time HH:MM' });
+  }
+  if (findSlotHolder.get(appointmentDate, appointmentTime, 0)) {
+    return res.status(409).json({ message: 'Another booking already holds that date and time' });
+  }
+
+  const paymentStatus = body.paymentStatus === 'offline' ? 'offline' : 'unpaid';
+  const givenFee = Number(body.consultationFee);
+  const fee = body.consultationFee !== '' && body.consultationFee != null && Number.isFinite(givenFee) && givenFee >= 0 ? givenFee : getFee();
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO appointments (
+        fullName, email, phone, age, gender, healthGoal, notes,
+        appointmentDate, appointmentTime, consultationFee, paymentStatus, status, adminNotes, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, 'admin')
+    `).run(
+      fullName, email, phone, text(String(body.age ?? ''), 3), text(body.gender, 20), text(body.healthGoal, 80), text(body.notes, 2000),
+      appointmentDate, appointmentTime, fee, paymentStatus, text(body.adminNotes, 2000)
+    );
+
+    if (email) {
+      sendMail({
+        to: [email, process.env.DOCTOR_EMAIL].filter(Boolean).join(', '),
+        subject: `Appointment Confirmed: ${fullName}`,
+        html: `
+          <h3>Your Consultation is Confirmed!</h3>
+          <p>Dear ${escapeHtml(fullName)},</p>
+          <p>Your appointment has been booked.</p>
+          <ul>
+            <li><strong>Date:</strong> ${escapeHtml(appointmentDate)}</li>
+            <li><strong>Time:</strong> ${escapeHtml(appointmentTime)} IST</li>
+          </ul>
+          <p>We look forward to speaking with you!</p>
+        `
+      });
+    }
+
+    res.status(201).json({ data: db.prepare('SELECT * FROM appointments WHERE id = ?').get(result.lastInsertRowid) });
+  } catch (dbError) {
+    console.error('Error adding appointment:', dbError);
+    res.status(500).json({ message: 'Error saving appointment to database' });
+  }
+});
+
+// Endpoint 8: Blocked Days / Slots (Admin) — when the doctor is unavailable
+app.get('/api/admin/blocked-slots', requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT * FROM blocked_slots WHERE date >= date('now', '-1 day') ORDER BY date, time").all();
+  res.json({ data: rows });
+});
+
+app.post('/api/admin/blocked-slots', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const date = typeof body.date === 'string' ? body.date : '';
+  const time = typeof body.time === 'string' && body.time ? body.time : null;
+  const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 200) : '';
+  if (!DATE_RE.test(date) || (time && !TIME_RE.test(time))) {
+    return res.status(400).json({ message: 'Date must be YYYY-MM-DD and time HH:MM' });
+  }
+  const duplicate = time
+    ? db.prepare('SELECT id FROM blocked_slots WHERE date = ? AND time = ?').get(date, time)
+    : db.prepare('SELECT id FROM blocked_slots WHERE date = ? AND time IS NULL').get(date);
+  if (duplicate) return res.status(409).json({ message: 'That is already blocked' });
+
+  const result = db.prepare('INSERT INTO blocked_slots (date, time, reason) VALUES (?, ?, ?)').run(date, time, reason);
+  res.status(201).json({ data: db.prepare('SELECT * FROM blocked_slots WHERE id = ?').get(result.lastInsertRowid) });
+});
+
+app.delete('/api/admin/blocked-slots/:id', requireAdmin, (req, res) => {
+  const result = db.prepare('DELETE FROM blocked_slots WHERE id = ?').run(req.params.id);
+  if (!result.changes) return res.status(404).json({ message: 'Block not found' });
+  res.json({ success: true });
 });
 
 // Start Server

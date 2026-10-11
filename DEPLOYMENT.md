@@ -29,6 +29,10 @@ The Razorpay key ID and secret must be from the same key pair (live with live).
 
 `https://consultation.herbsmagic.in/admin` — sign in to see every booking, search/filter, export CSV, change status (confirmed / completed / cancelled / no-show), reschedule, and keep internal notes.
 
+- Views: Upcoming, Today, Needs update (date has passed but never marked completed / no-show), Previous, Cancelled, All — grouped by day, with a date-range filter.
+- **Add booking**: for phone / walk-in patients. Reserves the slot without online payment; mark it "Paid offline" or "Not paid yet".
+- **Availability**: block a whole day or a single slot. Blocked times disappear from the website; bookings already made on them are not changed.
+
 - Login is `ADMIN_USERNAME` (default `admin`) + `ADMIN_PASSWORD` from `backend/.env`. The panel returns "not configured" until `ADMIN_PASSWORD` is set. Use a long, unique password.
 - After setting or changing it: `pm2 restart hm-consultation-api --update-env`. Changing the password signs out every open session.
 - Sessions last 12 hours. 5 wrong attempts lock that IP out for 15 minutes (restarting the API clears the lock).
@@ -55,6 +59,8 @@ Live vhost: `/etc/nginx/sites-available/consultation.herbsmagic.in` (SSL by cert
 - `root /root/apps/consultation-new;`
 - `include /etc/nginx/snippets/hm-consultation-deny.conf;` — returns 404 for `backend/`, `.git`, dotfiles, `deploy.sh`, `package.json`, `*.jsx`, etc. **Keep this**: the web root is the repo, which contains `backend/.env`.
 - `location /api { proxy_pass http://127.0.0.1:5200; ... }`
+
+- Unknown URLs: the app shows a "Page not found" screen for any path other than `/` and `/admin`. With the plain `try_files $uri $uri/ /index.html;` fallback that screen is served with status 200; to return a real 404 status, use the three `location = /admin` / `location /` / `error_page 404` lines from `deploy/nginx.conf`.
 
 Reference copy of the rules: `deploy/nginx.conf`. After any change: `nginx -t && systemctl reload nginx`.
 
