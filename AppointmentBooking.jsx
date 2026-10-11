@@ -39,6 +39,7 @@ function AppointmentBooking({ setPage }) {
   const [errors, setErrors] = useBkState({});
   const [bookedSlots, setBookedSlots] = useBkState([]);
   const [unsavedPaymentId, setUnsavedPaymentId] = useBkState('');
+  const [blockedDays, setBlockedDays] = useBkState([]);
 
   const [consultFee, setConsultFee] = useBkState(null);
 
@@ -56,6 +57,14 @@ function AppointmentBooking({ setPage }) {
   const grid = useBkMemo(() => bkBuildMonthGrid(calYear, calMonth), [calYear, calMonth]);
   const todayKey = bkKey(today.getFullYear(), today.getMonth(), today.getDate());
 
+  // Whole days the doctor has marked unavailable
+  useBkEffect(() => {
+    fetch(`${API_BASE}/api/availability/blocked-days`)
+      .then(r => r.json())
+      .then(d => setBlockedDays(d.blockedDays || []))
+      .catch(() => setBlockedDays([]));
+  }, []);
+
   useBkEffect(() => {
     if (!selectedDate) {
       setBookedSlots([]);
@@ -63,24 +72,27 @@ function AppointmentBooking({ setPage }) {
     }
     fetch(`${API_BASE}/api/b2b-appointments/booked-slots?date=${selectedDate}`)
       .then(r => r.json())
-      .then(d => setBookedSlots(d.bookedSlots || []))
+      .then(d => {
+        setBookedSlots(d.bookedSlots || []);
+        if (d.dayBlocked) setBlockedDays(days => (days.includes(selectedDate) ? days : [...days, selectedDate]));
+      })
       .catch(() => setBookedSlots([]));
   }, [selectedDate]);
 
   const availableSlots = useBkMemo(() => {
-    if (!selectedDate) return [];
+    if (!selectedDate || blockedDays.includes(selectedDate)) return [];
     const dayName = bkWeekdays[new Date(selectedDate + 'T00:00:00').getDay()];
     const allSlots = bkDefaultSlots[dayName] || [];
     return allSlots.filter(slot => !bookedSlots.includes(slot));
-  }, [selectedDate, bookedSlots]);
+  }, [selectedDate, bookedSlots, blockedDays]);
 
   useBkEffect(() => {
-    if (availableSlots.length && !availableSlots.includes(selectedSlot)) setSelectedSlot(availableSlots[0]);
+    if (!availableSlots.includes(selectedSlot)) setSelectedSlot(availableSlots[0] || '');
   }, [availableSlots]);
 
   const isDayAvailable = (y, m, d) => {
     const key = bkKey(y, m, d);
-    if (key < todayKey) return false;
+    if (key < todayKey || blockedDays.includes(key)) return false;
     const dayName = bkWeekdays[new Date(y, m, d).getDay()];
     return !!bkDefaultSlots[dayName]; // Sun has no entry → blocked
   };
@@ -390,6 +402,12 @@ function AppointmentBooking({ setPage }) {
                     {errors.date && <p style={{ ...errSt, marginTop: 8 }}>{errors.date}</p>}
                   </div>
               </div>
+
+              {selectedDate && availableSlots.length === 0 && (
+                <div style={{ background: 'var(--bg-soft)', borderRadius: 12, padding: '14px 16px', fontFamily: 'var(--sans)', fontSize: 13, color: 'var(--text-dark)', marginBottom: 28 }}>
+                  No slots are left on {niceDate}. Please pick another date.
+                </div>
+              )}
 
               {selectedDate && availableSlots.length > 0 && (
                 <div style={{ marginBottom: 28 }}>
